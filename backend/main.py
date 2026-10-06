@@ -8,6 +8,7 @@ load_dotenv()
 
 from api.routes import router  # noqa: E402  (import after load_dotenv)
 from db.init_db import init_database  # noqa: E402
+from prometheus_fastapi_instrumentator import Instrumentator  # noqa: E402
 
 
 @asynccontextmanager
@@ -32,6 +33,10 @@ app.add_middleware(
 )
 
 app.include_router(router)
+
+# Expose Prometheus metrics at /metrics: default HTTP metrics plus the custom
+# RAG metrics defined in metrics.py. This is the endpoint Prometheus scrapes.
+Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 
 
 @app.get("/health")
