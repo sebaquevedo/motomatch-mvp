@@ -15,6 +15,9 @@ frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 
+# Agent tooling (machine-specific, auto-generated)
+.atl/
+
 # IDE
 .vscode/
 .idea/
