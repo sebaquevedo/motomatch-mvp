@@ -1,88 +1,177 @@
 # MotoMatch RAG MVP
 
-Local RAG system for motorcycle parts compatibility, using OpenAI for generation
-and local embeddings for retrieval.
+Local RAG (Retrieval-Augmented Generation) system for motorcycle parts
+compatibility. Ask a natural-language question, get an answer grounded in a
+parts catalog, with its sources and a confidence score — plus a full
+observability stack so you can see exactly what the system is doing.
 
-## Stack
+## Architecture
 
-1. **Embeddings**: `sentence-transformers` (local, no API key)
-2. **Vector DB**: LanceDB (local, file-based)
-3. **LLM**: OpenAI `gpt-4o-mini` (JSON mode)
-4. **DB**: SQLite (local)
-5. **Frontend**: React + Vite
-
-## Setup
-
-### 1. Backend
-
-```bash
-cd backend
-python -m venv venv
-venv\Scripts\activate        # Windows
-# source venv/bin/activate   # macOS / Linux
-pip install -r requirements.txt
+```
+┌──────────────┐     ┌─────────────────────────────────────────────┐
+│  React/Vite  │────▶│  FastAPI backend (:8000)                    │
+│   (:5173)    │     │                                             │
+└──────────────┘     │  query ──▶ local embeddings (MiniLM)        │
+                     │        ──▶ vector search (LanceDB)          │
+                     │        ──▶ GPT-4o-mini (OpenAI)             │
+                     │        ──▶ answer + sources + confidence    │
+                     │                                             │
+                     │  /metrics ◀── scraped by Prometheus         │
+                     └─────────────────────────────────────────────┘
+                                         │
+                            ┌────────────┴────────────┐
+                            ▼                          ▼
+                     Prometheus (:9090)  ──────▶  Grafana (:3000)
 ```
 
-### 2. Add your OpenAI API key
+| Layer       | Tech                                   | Notes                     |
+| ----------- | -------------------------------------- | ------------------------- |
+| Frontend    | React 18 + Vite 5                      | —                         |
+| Backend     | FastAPI + Uvicorn                      | —                         |
+| Embeddings  | `sentence-transformers` (all-MiniLM)   | Local, no API key         |
+| Vector DB   | LanceDB                                | Local, file-based         |
+| LLM         | OpenAI `gpt-4o-mini`                   | JSON mode                 |
+| Relational  | SQLite                                 | Users, documents, logs    |
+| Monitoring  | Prometheus + Grafana                   | Docker                    |
 
-Create a file named `.env` inside `backend/` with this content:
+## Prerequisites
+
+- **Python 3.11+**
+- **Node.js 18+** (with npm)
+- **An OpenAI API key** — https://platform.openai.com/api-keys
+- **Docker Desktop** — only for the monitoring stack (optional)
+
+> **Windows / PowerShell note:** PowerShell does **not** accept `&&` to chain
+> commands. Run the commands one per line (as shown below). The examples use
+> the venv's Python directly (`.\venv\Scripts\python.exe`) to avoid
+> execution-policy issues with `Activate.ps1`.
+
+---
+
+## 1. Backend
+
+From the repo root:
+
+```powershell
+cd backend
+python -m venv venv
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+### Add your OpenAI API key
+
+Create a file named **`.env`** inside `backend/` (same folder as `main.py`):
 
 ```
 OPENAI_API_KEY=sk-proj-your-real-key-here
 JWT_SECRET=motomatch-demo-secret-key-2024
 ```
 
-Get a key at https://platform.openai.com/api-keys
+> The key is only needed for the `/query` endpoint. Login and startup work
+> without it. `.env` is git-ignored and never leaves your machine.
 
-### 3. Start the backend
+### Run the backend
 
-```bash
-python main.py
-# API on http://localhost:8000  (docs at /docs)
+```powershell
+.\venv\Scripts\python.exe main.py
 ```
 
-On first start it auto-creates the DB, seeds 10 sample part catalog docs, and
-builds their embeddings (~30-60s the first time while the embedding model
-downloads).
+First start takes ~30–60s (downloads the embedding model and seeds the DB with
+10 sample catalog docs). When you see `[OK] Backend ready!` it's up.
 
-### 4. Frontend (new terminal)
+- API: http://localhost:8000
+- Interactive docs: http://localhost:8000/docs
+- Health: http://localhost:8000/health
+- Metrics: http://localhost:8000/metrics
 
-```bash
+### Backend dependencies (`backend/requirements.txt`)
+
+`fastapi`, `uvicorn[standard]`, `sqlalchemy`, `openai`, `lancedb`,
+`sentence-transformers`, `python-dotenv`, `python-multipart`, `pydantic`,
+`PyJWT`, `prometheus-fastapi-instrumentator`.
+
+---
+
+## 2. Frontend
+
+In a **second terminal**, from the repo root:
+
+```powershell
 cd frontend
 npm install
 npm run dev
-# App on http://localhost:5173
 ```
 
-## Demo Credentials
+Open http://localhost:5173.
+
+### Demo credentials (pre-filled on the login screen)
 
 - Email: `demo@motomatch.local`
 - Password: `DemoMotoMatch2024!`
 
-(Both are pre-filled on the login screen.)
+### Try it
 
-## Try it
+> Is the Honda CB650F alternator compatible with the CBR650R?
 
-Login, then ask something like:
+Expected: **No** — the CB650F uses a 3-pin (mechanical) regulator and the
+CBR650R uses a 4-pin (electronic) one.
 
-> Is the CB650F 2018 alternator compatible with the 2020?
+### Frontend dependencies (`frontend/package.json`)
 
-You get a RAG answer with its sources and a confidence score.
+`react`, `react-dom`, `react-router-dom`, `axios` (+ `vite` and
+`@vitejs/plugin-react` for dev/build).
 
-## Notes / Fixes vs. the original spec
+---
 
-- Dependencies use modern, compatible versions to avoid the classic
-  `sentence-transformers==2.2.2` / `huggingface_hub` install failure.
-- All paths are anchored to the `backend/` directory (via `config.py`), so it
-  runs the same from the repo root or from inside `backend/`.
-- OpenAI calls use JSON mode for reliable parsing.
-- `startup` event replaced with the modern FastAPI `lifespan` handler.
-- Query logs record the real authenticated user id; analytics counts real queries.
+## 3. Monitoring (optional — needs Docker)
+
+The backend exposes Prometheus metrics at `/metrics`. The stack in
+`monitoring/` scrapes them and renders a ready-made Grafana dashboard.
+
+```powershell
+cd monitoring
+docker compose up -d
+```
+
+- **Grafana:** http://localhost:3000 — dashboard **"MotoMatch RAG
+  Observability"** loads automatically (anonymous admin access for local use).
+- **Prometheus:** http://localhost:9090
+
+What the dashboard shows: total queries, errors, average answer confidence,
+query rate, HTTP request rate per endpoint, and **latency split by stage**
+(end-to-end vs vector retrieval vs the OpenAI call) so you can see where the
+time actually goes.
+
+Stop it with:
+
+```powershell
+docker compose down
+```
+
+> The backend runs on your host, not in Docker. Prometheus reaches it via
+> `host.docker.internal:8000`. If you (re)start the backend, the dashboard
+> picks it back up within a few seconds.
+
+### Custom metrics exposed
+
+| Metric                            | Type      | Meaning                        |
+| --------------------------------- | --------- | ------------------------------ |
+| `rag_queries_total`               | counter   | Queries processed              |
+| `rag_query_errors_total`          | counter   | Queries that errored           |
+| `rag_query_duration_seconds`      | histogram | End-to-end latency             |
+| `rag_retrieval_duration_seconds`  | histogram | Vector retrieval latency       |
+| `rag_llm_duration_seconds`        | histogram | OpenAI call latency            |
+| `rag_answer_confidence`           | histogram | Model-reported confidence      |
+
+---
 
 ## Troubleshooting
 
-**Reset the database:** delete `backend/data/motomatch.db` and
-`backend/data/vectors/`, then restart the backend to re-seed.
-
-**OpenAI errors:** check `OPENAI_API_KEY` in `backend/.env` and your quota at
-https://platform.openai.com
+- **`The token '&&' is not a valid statement separator`** — you're in
+  PowerShell. Run commands one per line instead of chaining with `&&`.
+- **Login says "Invalid credentials" but the password is correct** — usually
+  the backend isn't running or isn't reachable. Check http://localhost:8000/health.
+- **OpenAI errors on `/query`** — check `OPENAI_API_KEY` in `backend/.env` and
+  your quota at https://platform.openai.com.
+- **Reset the database** — delete `backend/data/motomatch.db` and
+  `backend/data/vectors/`, then restart the backend to re-seed.
